@@ -16,6 +16,8 @@ export default function Page() {
 
   return (
     <main className="finance-app">
+      {menuOpen && <div style={{position:'fixed',top:0,left:0,background:'red',color:'white',padding:'4px',zIndex:9999}}>OPEN</div>}
+      {!menuOpen && <div style={{position:'fixed',top:0,left:0,background:'blue',color:'white',padding:'4px',zIndex:9999}}>CLOSED</div>}
       <div className="background-canvas" aria-hidden="true">
         <Dither
           waveColor={[0.32, 0.15, 1]}
