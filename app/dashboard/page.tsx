@@ -626,9 +626,9 @@ export default function DashboardPage() {
               <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} dy={8} />
               <YAxis axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} domain={[20, 100]} ticks={[20, 40, 60, 80, 100]} />
               <Tooltip content={<ChartTooltip />} />
-              <Area type="monotone" dataKey="sp" stroke="#bdff35" strokeWidth={2.5} fill="url(#spFill)" dot={false} activeDot={{ r: 4, fill: "#120e1b", stroke: "transparent", strokeWidth: 0 }} />
-              <Area type="monotone" dataKey="nasdaq" stroke="#6d6df7" strokeWidth={2.5} fill="url(#nasFill)" dot={false} activeDot={{ r: 4, fill: "#120e1b", stroke: "transparent", strokeWidth: 0 }} />
-              <Line type="monotone" dataKey="dow" stroke="#ff8168" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: "#120e1b", stroke: "transparent", strokeWidth: 0 }} />
+              <Area type="monotone" dataKey="sp" stroke="#bdff35" strokeWidth={2.5} fill="url(#spFill)" dot={false} />
+              <Area type="monotone" dataKey="nasdaq" stroke="#6d6df7" strokeWidth={2.5} fill="url(#nasFill)" dot={false} />
+              <Line type="monotone" dataKey="dow" stroke="#ff8168" strokeWidth={2} dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
