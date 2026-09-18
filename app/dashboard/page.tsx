@@ -59,6 +59,15 @@ interface StockData {
   dataPoints: DataPoint[]
 }
 
+interface MarketData {
+  pulse: { time: string; sp: number | null; nasdaq: number | null; dow: number | null }[]
+  volume: { time: string; volume: number }[]
+  sectors: { sector: string; value: number; fill: string }[]
+  breadth: { adv: number; dec: number; un: number; ratio: number; active: number }
+  risk: { x: number; y: number; z: number; name: string; color: string }[]
+  stats: { marketCap: string | null; beta: number | null }
+}
+
 const pulseData = [
   { time: "09:30", sp: 62, nasdaq: 54, dow: 48 },
   { time: "10:00", sp: 64, nasdaq: 58, dow: 51 },
@@ -141,7 +150,7 @@ const tickerStats: Record<string, { marketCap: string; beta: string; avgVolume: 
 
 /* ─── Hover tooltip — words colored to match each line/bar/segment ─── */
 
-function ChartTooltip({ active, payload, label }: any) {
+function ChartTooltip({ active, payload, label, nameMap }: any) {
   if (!active || !payload || !payload.length) return null
   return (
     <div className="mp-tooltip">
@@ -154,15 +163,16 @@ function ChartTooltip({ active, payload, label }: any) {
           entry.payload?.color ||
           entry.payload?.fill ||
           "#c7ff55"
-        const name = entry.name ?? entry.dataKey ?? "value"
+        const rawName = entry.name ?? entry.dataKey ?? "value"
+        const name = nameMap?.[rawName] ?? rawName
         const value = entry.value
         const display = Array.isArray(value)
           ? value[1] != null
             ? `${value[1] > 0 ? "+" : ""}${value[1]}%`
             : String(value[0])
           : typeof value === "number"
-            ? value > 0 && (name === "Change" || name === "Return")
-              ? `+${value}%`
+            ? name === "Change" || name === "Return" || name === "Volatility"
+              ? `${value > 0 && name !== "Volatility" ? "+" : ""}${value}%`
               : value.toLocaleString()
             : value
         return (
@@ -233,6 +243,9 @@ export default function DashboardPage() {
   const [submittedTickers, setSubmittedTickers] = useState(["AAPL", "MSFT"])
   const [range, setRange] = useState("1D")
   const [stockData, setStockData] = useState<StockData | null>(null)
+  const [market, setMarket] = useState<MarketData | null>(null)
+  const [compareReal, setCompareReal] = useState<any[] | null>(null)
+  const [compareMeta, setCompareMeta] = useState<Record<string, { price: string; change: string }>>({})
 
   // Interactive controls & error state
   const [showNotifications, setShowNotifications] = useState(false)
@@ -287,8 +300,88 @@ export default function DashboardPage() {
     fetchStock(activeTicker)
   }, [activeTicker, fetchStock])
 
+  useEffect(() => {
+    let cancelled = false
+    setMarket(null)
+    fetch(`/api/market?ticker=${encodeURIComponent(activeTicker)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d && !d.error) setMarket(d)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [activeTicker])
+
+  useEffect(() => {
+    let cancelled = false
+    const periodMap: Record<string, string> = { '1D': '1D', '1W': '1W', '1M': '1M', '1Y': '1Y' }
+    const period = periodMap[range] ?? '1M'
+    const syms = submittedTickers.slice(0, 4)
+    setCompareReal(null)
+    ;(async () => {
+      try {
+        const res = await Promise.all(syms.map((s) => fetch(`/api/stock?ticker=${encodeURIComponent(s)}&period=${period}`)))
+        const data = await Promise.all(res.map((r) => (r.ok ? r.json() : null)))
+        if (cancelled) return
+
+        const maps = data.map((d: any) => {
+          const m = new Map<string, number>()
+          let base = 0
+          const off = d?.gmtoffset ?? 0
+          d?.dataPoints?.forEach((p: any) => {
+            if (p.close == null) return
+            let label: string
+            if (period === '1D') {
+              const t = new Date((p.time + off) * 1000)
+              label = `${String(t.getUTCHours()).padStart(2, '0')}:${String(Math.floor(t.getUTCMinutes() / 30) * 30).padStart(2, '0')}`
+            } else {
+              label = new Date(p.time * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+            }
+            if (!base) base = p.close
+            m.set(label, p.close)
+          })
+          return { m, base: base || 1 }
+        })
+        const primary = maps.find((x: any) => x.m.size)
+        if (!primary || !primary.m.size) return
+
+        const rows = [...primary.m.keys()].map((label) => {
+          const row: Record<string, string | number | null> = { time: label as string }
+          syms.forEach((s, i) => {
+            const v = maps[i]?.m.get(label as string)
+            row[s] = v != null ? Math.round((v / maps[i].base) * 1000) / 10 : null
+          })
+          return row
+        })
+
+        if (!cancelled) {
+          setCompareReal(rows)
+          const metas: Record<string, { price: string; change: string }> = {}
+          data.forEach((d: any, i: number) => {
+            if (!d || !syms[i]) return
+            metas[syms[i]] = {
+              price: formatPrice(d.currentPrice),
+              change: d.dailyChangePercent != null ? `${d.dailyChangePercent >= 0 ? '+' : ''}${d.dailyChangePercent.toFixed(2)}%` : '',
+            }
+          })
+          setCompareMeta(metas)
+        }
+      } catch {
+        if (!cancelled) setCompareReal(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [submittedTickers, range])
+
   const meta = tickerMeta[activeTicker] ?? { name: `${activeTicker} Holdings`, color: "#bdff35", price: "—", change: "+0.00%" }
   const stats = tickerStats[activeTicker] ?? { marketCap: "—", beta: "—", avgVolume: "—", dayRange: "—" }
+
+  const marketCapLabel = market?.stats?.marketCap ?? stats.marketCap
+  const betaLabel = market?.stats?.beta != null ? market.stats.beta.toFixed(2) : stats.beta
 
   const displayName = stockData?.name ?? meta.name
   const displayPrice = stockData?.currentPrice != null ? formatPrice(stockData.currentPrice) : meta.price
@@ -380,6 +473,25 @@ export default function DashboardPage() {
 
   const activeRiskData = useMemo(() => riskData.map((point, index) => index === 0 ? { ...point, name: activeTicker, y: Number((livePct != null ? livePct : 1.84) + 3.8), color: meta.color } : point), [activeTicker, livePct, meta.color])
 
+  /* Real market data overrides the mock estimates wherever it's live */
+  const displayPulseData = useMemo(() => (market?.pulse?.length ? market.pulse : activePulseData), [market, activePulseData])
+  const displaySectorData = useMemo(() => (market?.sectors?.length ? market.sectors : activeSectorData), [market, activeSectorData])
+  const displayVolumeData = useMemo(() => (market?.volume?.length && volumeTimeframe === '1D' ? market.volume : activeVolumeData), [market, activeVolumeData, volumeTimeframe])
+  const displayRiskData = useMemo(() => (market?.risk?.length ? market.risk : activeRiskData), [market, activeRiskData])
+
+  const displayBreadthData = useMemo(() => {
+    if (!market?.breadth) return activeBreadthData
+    const { adv, dec, un, active } = market.breadth
+    const total = active || adv + dec + un || 1
+    return [
+      { name: "Advancing", value: Math.round((adv / total) * 100), color: "#bdff35" },
+      { name: "Declining", value: Math.round((dec / total) * 100), color: "#ff8168" },
+      { name: "Unchanged", value: Math.round((un / total) * 100), color: "#77736d" },
+    ]
+  }, [market, activeBreadthData])
+
+  const breadthRatio = market?.breadth?.ratio ?? displayBreadthData[0].value / Math.max(1, displayBreadthData[1].value)
+
   /* Comparison data responds dynamically to range tabs: 1D, 1W, 1M, 1Y */
   const comparisonData = useMemo(() => {
     const active = submittedTickers.slice(0, 4)
@@ -410,6 +522,8 @@ export default function DashboardPage() {
       return row
     })
   }, [submittedTickers, range])
+
+  const displayComparisonData = compareReal ?? comparisonData
 
   const activeMeta = submittedTickers.slice(0, 4).map((ticker, index) => ({
     symbol: ticker,
@@ -444,7 +558,9 @@ export default function DashboardPage() {
     <main className="ds">
       {/* ── Header ── */}
       <header className="ds-header">
-        <a href="/" className="ds-brand"><span>×</span>StockLens</a>
+        <a href="/" className="ds-brand">
+          <img src="/logo.png" alt="StockLens" className="logo-image" />
+        </a>
         <div className="ds-header-right">
           <span className="ds-market-status"><span className="ds-sync-dot" /> {marketOpen ? "Market open" : "Market closed"}</span>
           
@@ -589,9 +705,9 @@ export default function DashboardPage() {
 
       {/* ── KPI grid ── */}
       <section className="kpi-grid" aria-label={`${activeTicker} key metrics`}>
-        <div className="kpi-card"><small>Market cap</small><strong>{stats.marketCap}</strong><span>Large-cap leader</span></div>
+        <div className="kpi-card"><small>Market cap</small><strong>{marketCapLabel}</strong><span>Large-cap leader</span></div>
         <div className="kpi-card"><small>Avg. volume</small><strong>{avgVolume}</strong><span>Shares traded today</span></div>
-        <div className="kpi-card"><small>Beta</small><strong>{stats.beta}</strong><span>vs. broader market</span></div>
+        <div className="kpi-card"><small>Beta</small><strong>{betaLabel}</strong><span>vs. broader market</span></div>
         <div className="kpi-card"><small>Day range</small><strong>{dayRange}</strong><span>{displayChange} session move</span></div>
       </section>
 
@@ -611,7 +727,7 @@ export default function DashboardPage() {
         />
         <div className="chart-large">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={activePulseData} margin={{ top: 8, right: 4, left: -24, bottom: 0 }}>
+            <AreaChart data={displayPulseData} margin={{ top: 8, right: 4, left: -24, bottom: 0 }}>
               <defs>
                 <linearGradient id="spFill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#bdff35" stopOpacity={0.18} />
@@ -624,8 +740,8 @@ export default function DashboardPage() {
               </defs>
               <CartesianGrid stroke={GRID} strokeDasharray="3 7" vertical={false} />
               <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} dy={8} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} domain={[20, 100]} ticks={[20, 40, 60, 80, 100]} />
-              <Tooltip content={<ChartTooltip />} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} domain={['auto', 'auto']} />
+              <Tooltip content={<ChartTooltip nameMap={{ sp: activeTicker, nasdaq: "Nasdaq", dow: "S&P 500" }} />} />
               <Area type="monotone" dataKey="sp" stroke="#bdff35" strokeWidth={2.5} fill="url(#spFill)" dot={false} />
               <Area type="monotone" dataKey="nasdaq" stroke="#6d6df7" strokeWidth={2.5} fill="url(#nasFill)" dot={false} />
               <Line type="monotone" dataKey="dow" stroke="#ff8168" strokeWidth={2} dot={false} />
@@ -634,7 +750,7 @@ export default function DashboardPage() {
         </div>
         <div className="chart-footer-note">
           <span><i className="signal-pulse" /> Live data · Yahoo Finance</span>
-          <span>Source: Market Pulse composite</span>
+          <span>Indexed to session open · {activeTicker} vs Nasdaq vs S&P 500</span>
         </div>
       </section>
 
@@ -658,7 +774,7 @@ export default function DashboardPage() {
                 {activeCardInfo === 'sector' && (
                   <div className="chart-info-popover">
                     <strong>Sector Exposure</strong>
-                    Calculated from market-cap weighted price movement across S&P 500 GICS sectors.
+                    Weekly momentum of S&P 500 sector ETFs (SMH, XLK, XLY, XLF, XLV, XLE, XLU).
                   </div>
                 )}
               </div>
@@ -666,19 +782,19 @@ export default function DashboardPage() {
           />
           <div className="chart-medium">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={activeSectorData} layout="vertical" margin={{ top: 0, right: 12, left: 2, bottom: 0 }} barCategoryGap={9}>
+              <BarChart data={displaySectorData} layout="vertical" margin={{ top: 0, right: 12, left: 2, bottom: 0 }} barCategoryGap={9}>
                 <CartesianGrid stroke={GRID} horizontal={false} />
-                <XAxis type="number" domain={[-2, 8]} hide />
+                <XAxis type="number" domain={['auto', 'auto']} hide />
                 <YAxis type="category" dataKey="sector" axisLine={false} tickLine={false} width={93} tick={{ fill: "#68645e", fontSize: 11 }} />
-                <Tooltip content={<ChartTooltip />} formatter={(value: number) => [`${value > 0 ? "+" : ""}${value.toFixed(1)}%`, "Change"]} cursor={{ fill: "rgba(242,239,248,.04)" }} />
+                <Tooltip content={<ChartTooltip nameMap={{ value: "Change" }} />} formatter={(value: number) => [`${value > 0 ? "+" : ""}${value.toFixed(1)}%`, "Change"]} cursor={{ fill: "rgba(242,239,248,.04)" }} />
                 <ReferenceLine x={0} stroke="rgba(242,239,248,.25)" />
                 <Bar dataKey="value" radius={[0, 5, 5, 0]}>
-                  {activeSectorData.map((entry) => <Cell key={entry.sector} fill={entry.fill} />)}
+                  {displaySectorData.map((entry) => <Cell key={entry.sector} fill={entry.fill} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
-          <div className="panel-caption"><span>Leading theme</span><strong>{activeSectorData[0].sector} +{activeSectorData[0].value}%</strong></div>
+          <div className="panel-caption"><span>Leading theme</span><strong>{displaySectorData[0].sector} {displaySectorData[0].value > 0 ? "+" : ""}{displaySectorData[0].value}%</strong></div>
         </div>
 
         <div className="panel volume-panel">
@@ -718,11 +834,11 @@ export default function DashboardPage() {
           />
           <div className="chart-medium">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={activeVolumeData} margin={{ top: 10, right: 5, left: -25, bottom: 0 }}>
+              <ComposedChart data={displayVolumeData} margin={{ top: 10, right: 5, left: -25, bottom: 0 }}>
                 <CartesianGrid stroke={GRID} strokeDasharray="3 7" vertical={false} />
                 <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} />
                 <YAxis axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} />
-                <Tooltip content={<ChartTooltip />} />
+                <Tooltip content={<ChartTooltip nameMap={{ volume: `${activeTicker} volume` }} />} />
                 <Bar dataKey="volume" fill="#6d6df7" radius={[5, 5, 0, 0]} barSize={22} />
                 <Line dataKey="volume" stroke="#bdff35" strokeWidth={2} dot={false} />
               </ComposedChart>
@@ -753,7 +869,7 @@ export default function DashboardPage() {
                 {activeCardInfo === 'breadth' && (
                   <div className="chart-info-popover">
                     <strong>Market Breadth</strong>
-                    Ratio of advancing to declining issues across 3,000+ US equities.
+                    Real advancing vs declining count across a sample of 22 liquid US equities.
                   </div>
                 )}
               </div>
@@ -763,19 +879,19 @@ export default function DashboardPage() {
             <div className="donut-wrap">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={activeBreadthData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={70} paddingAngle={3} stroke="none">
-                    {activeBreadthData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                  <Pie data={displayBreadthData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={70} paddingAngle={3} stroke="none">
+                    {displayBreadthData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                   </Pie>
                   <Tooltip content={<ChartTooltip />} />
                 </PieChart>
               </ResponsiveContainer>
               <div className="donut-center">
-                <strong>{(activeBreadthData[0].value / Math.max(1, activeBreadthData[1].value)).toFixed(1)} : 1</strong>
+                <strong>{breadthRatio.toFixed(1)} : 1</strong>
                 <small>adv / dec</small>
               </div>
             </div>
             <div className="breadth-legend">
-              {activeBreadthData.map((item) => (
+              {displayBreadthData.map((item) => (
                 <div key={item.name}>
                   <span><i style={{ background: item.color }} />{item.name}</span>
                   <strong>{item.value}%</strong>
@@ -783,7 +899,7 @@ export default function DashboardPage() {
               ))}
             </div>
           </div>
-          <div className="panel-caption"><span>Read-through</span><strong>{activeBreadthData[0].value > 64 ? "Strong participation" : "Healthy participation"}</strong></div>
+          <div className="panel-caption"><span>Read-through</span><strong>{displayBreadthData[0].value > 64 ? "Strong participation" : displayBreadthData[0].value > 50 ? "Healthy participation" : "Narrow participation"}</strong></div>
         </div>
 
         <div className="panel risk-panel" id="signals">
@@ -804,7 +920,7 @@ export default function DashboardPage() {
                 {activeCardInfo === 'risk' && (
                   <div className="chart-info-popover">
                     <strong>Risk Profile</strong>
-                    30-day realized volatility vs session return relative to index benchmark peers.
+                    3-month total return vs annualized realized volatility from daily returns.
                   </div>
                 )}
               </div>
@@ -817,9 +933,7 @@ export default function DashboardPage() {
                 <XAxis type="number" dataKey="x" name="Volatility" tick={{ fill: AXIS, fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => `${value}%`} />
                 <YAxis type="number" dataKey="y" name="Return" tick={{ fill: AXIS, fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => `${value}%`} />
                 <Tooltip content={<ChartTooltip />} cursor={{ strokeDasharray: "3 3" }} formatter={(value: number, name: string) => [`${value}%`, name]} />
-                <ReferenceLine y={4} stroke="rgba(242,239,248,.25)" strokeDasharray="4 4" />
-                <ReferenceLine x={1.5} stroke="rgba(242,239,248,.25)" strokeDasharray="4 4" />
-                <Scatter name="Stocks" data={activeRiskData} shape={(props: any) => <circle cx={props.cx} cy={props.cy} r={Math.max(5, props.payload.z / 3)} fill={props.payload.color} fillOpacity={0.9} stroke="#09070f" strokeWidth={2} />} />
+                <Scatter name="Stocks" data={displayRiskData} shape={(props: any) => <circle cx={props.cx} cy={props.cy} r={Math.max(5, props.payload.z / 3)} fill={props.payload.color} fillOpacity={0.9} stroke="#09070f" strokeWidth={2} />} />
               </ScatterChart>
             </ResponsiveContainer>
           </div>
@@ -882,12 +996,12 @@ export default function DashboardPage() {
           </div>
           <div className="compare-chart">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={comparisonData} margin={{ top: 10, right: 6, left: -25, bottom: 0 }}>
+              <LineChart data={displayComparisonData} margin={{ top: 10, right: 6, left: -25, bottom: 0 }}>
                 <CartesianGrid stroke={GRID} strokeDasharray="3 7" vertical={false} />
-                <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} dy={7} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} domain={[25, 100]} ticks={[25, 50, 75, 100]} tickFormatter={(value: number) => `${value}`} />
+                <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 10 }} dy={7} interval="preserveStartEnd" minTickGap={24} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: AXIS, fontSize: 11 }} domain={['auto', 'auto']} tickFormatter={(value: number) => `${value}`} />
                 <Tooltip content={<ChartTooltip />} />
-                <ReferenceLine y={50} stroke="rgba(242,239,248,.25)" strokeDasharray="4 4" />
+                <ReferenceLine y={100} stroke="rgba(242,239,248,.25)" strokeDasharray="4 4" />
                 {activeMeta.map((item) => <Line key={item.symbol} type="monotone" dataKey={item.symbol} stroke={item.color} strokeWidth={2.5} dot={false} activeDot={{ r: 4, stroke: "#120e1b", strokeWidth: 2 }} />)}
               </LineChart>
             </ResponsiveContainer>
@@ -896,7 +1010,7 @@ export default function DashboardPage() {
             <span>Indexed to first visible session</span>
             <div className="compare-metrics">
               {activeMeta.map((item) => (
-                <div key={item.symbol}><i style={{ background: item.color }} /><strong>{item.symbol}</strong><span className="text-up">{item.change}</span><small>{item.price}</small></div>
+                <div key={item.symbol}><i style={{ background: item.color }} /><strong>{item.symbol}</strong><span className={(compareMeta[item.symbol]?.change ?? item.change).startsWith('+') ? "text-up" : "text-down"}>{compareMeta[item.symbol]?.change ?? item.change}</span><small>{compareMeta[item.symbol]?.price ?? item.price}</small></div>
               ))}
             </div>
           </div>

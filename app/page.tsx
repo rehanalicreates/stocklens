@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { createPortal } from 'react-dom'
 import Dither from '@/components/dither-background'
 import { LiveClock } from '@/components/LiveClock'
 
@@ -13,11 +14,22 @@ const stats = [
 
 export default function Page() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
+  const [signalAge, setSignalAge] = useState(12)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSignalAge((prev) => (prev >= 60 ? 12 : prev + 1))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <main className="finance-app">
-      {menuOpen && <div style={{position:'fixed',top:0,left:0,background:'red',color:'white',padding:'4px',zIndex:9999}}>OPEN</div>}
-      {!menuOpen && <div style={{position:'fixed',top:0,left:0,background:'blue',color:'white',padding:'4px',zIndex:9999}}>CLOSED</div>}
       <div className="background-canvas" aria-hidden="true">
         <Dither
           waveColor={[0.32, 0.15, 1]}
@@ -35,22 +47,32 @@ export default function Page() {
 
       <header className="site-header">
         <Link href="/" className="wordmark">
-          <span className="wordmark-mark">×</span>StockLens
+          <img src="/logo.png" alt="StockLens" className="logo-image" />
         </Link>
         <button className="menu-toggle" aria-label="Toggle navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>
           {menuOpen ? '×' : '•••'}
         </button>
-        <nav className={menuOpen ? 'main-nav is-open' : 'main-nav'} aria-label="Primary navigation">
+      </header>
+
+      {mounted && menuOpen && createPortal(
+        <nav className="main-nav is-open" aria-label="Primary navigation">
           <Link href="/" onClick={() => setMenuOpen(false)}>Home</Link>
           <Link href="#signals" onClick={() => setMenuOpen(false)}>Dashboard</Link>
           <Link href="#why" onClick={() => setMenuOpen(false)}>Features</Link>
           <Link href="#community" onClick={() => setMenuOpen(false)}>Join Us</Link>
-        </nav>
-      </header>
+        </nav>,
+        document.body
+      )}
 
       <section className="hero-section" id="top">
         <div className="hero-kicker"><span className="pulse" /> the calmer way to stay ahead</div>
-        <h1>Make sense<br />of the <i>noise.</i></h1>
+        <div className="hero-heading-row">
+          <h1>Make sense<br />of the <i>noise.</i></h1>
+          <div className="mascot-stage" aria-hidden="true">
+            <img src="/mascot-cat.png" alt="" className="mascot-cat" />
+            <span className="mascot-caption">your signal, in motion</span>
+          </div>
+        </div>
         <p className="hero-copy">StockLens turns market movement into a signal you can actually use. Track what matters, understand why it moves, and make your next move with a little more confidence.</p>
         <div className="hero-actions">
           <Link className="primary-button" href="/dashboard" onClick={() => setMenuOpen(false)} style={{ minWidth: '180px' }}>Get Started <span>↗</span></Link>
@@ -58,16 +80,11 @@ export default function Page() {
         <div className="hero-note"><span>01</span> Built for curious people, not finance bros.</div>
       </section>
 
-      <div className="mascot-stage" aria-hidden="true">
-        <img src="/mascot-cat.png" alt="" className="mascot-cat" />
-        <span className="mascot-caption">your signal, in motion</span>
-      </div>
-
       <Link href="/dashboard" className="signal-card" id="signals" aria-label="Live StockLens signal - Tap to open dashboard">
         <div className="signal-card-top"><span>LIVE DATA / Real-time</span><span className="live-label"><span className="pulse" /> live now</span></div>
         <div className="signal-row"><div><p className="signal-label">market mood</p><strong>quietly<br /><em>optimistic</em></strong></div><div className="signal-score">+72 <span>↑</span></div></div>
         <div className="signal-bars" aria-hidden="true"><span /><span /><span /><span /><span /><span /><span /><span /><span /><span /></div>
-        <div className="signal-footer"><span>updated 12 sec ago</span><span>tap to explore ↗</span></div>
+        <div className="signal-footer"><span>updated {signalAge} sec ago</span><span>tap to explore ↗</span></div>
       </Link>
 
       <section className="stats-section" id="why">
